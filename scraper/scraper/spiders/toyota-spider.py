@@ -32,7 +32,9 @@ class ToyotaSpider(scrapy.Spider):
             "transmissionType",
             "bodyType",
             "fuelType",
-            "trim"
+            "trim",
+            "cabType", # Crew Cab ,  Regular Cab, Extended Cab
+            "bedLength" # Short Bed  ( < 6ft) , Standard Bed ( 6ft > x < 8ft ), Long Bed   ( > 8ft ),
         ]
     }
 
@@ -62,7 +64,9 @@ class ToyotaSpider(scrapy.Spider):
                     'transmissionType':"",
                     'bodyType': "",
                     'fuelType': "",
-                    'trim': ""
+                    'trim': "",
+                    'cabType': "",
+                    'bedLength': ""
                 }
                 body = self.construct_trims_request(model['id'], year['year'])
                 json_body = json.dumps(body)
