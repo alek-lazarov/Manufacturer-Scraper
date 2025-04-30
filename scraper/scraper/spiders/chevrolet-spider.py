@@ -25,7 +25,7 @@ class ChevyItem(Item):
     packages = Field()
 
 class ChevySpider(scrapy.Spider):
-    name = "chevy"
+    name = "chevrolet"
     start_url = "https://www.chevrolet.com/shopping/configurator"
     headers = {
         "Dealerid": "0",
