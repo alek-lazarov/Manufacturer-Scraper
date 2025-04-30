@@ -1,0 +1,11 @@
+# created by virtualenv automatically
+*.json
+*.csv
+*.pyc
+*.spec
+build/
+dist/
+*.log
+env/
+.vs/
+.idea/
