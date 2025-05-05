@@ -176,20 +176,19 @@ class ToyotaSpider(scrapy.Spider):
             },
         }
 
-settings = Settings()
-
-settings.set("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
-settings.set("DOWNLOADER_MIDDLEWARES", {
-    "scraper.scraper.middlewares.ProxyMiddleware": 543,
-})
-
-# settings.set("FEED_URI", 'output.csv')
-# settings.set("FEED_FORMAT", 'csv')
-
-# settings.set("TWISTED_REACTOR", "twisted.internet.asyncioreactor.AsyncioSelectorReactor")
-
-process = CrawlerProcess(settings)
-process.crawl(ToyotaSpider)
-process.start()
-
+# settings = Settings()
+#
+# settings.set("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+#
+# settings.set("DOWNLOADER_MIDDLEWARES", {
+#     "scraper.scraper.middlewares.ProxyMiddleware": 543,
+# })
+#
+# # settings.set("FEED_URI", 'output.csv')
+# # settings.set("FEED_FORMAT", 'csv')
+#
+# # settings.set("TWISTED_REACTOR", "twisted.internet.asyncioreactor.AsyncioSelectorReactor")
+#
+# process = CrawlerProcess(settings)
+# process.crawl(ToyotaSpider)
+# process.start()
