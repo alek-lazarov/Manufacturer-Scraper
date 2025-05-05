@@ -1,78 +1,63 @@
+import json
+import re
+
 import playwright
 import scrapy
+from scrapy.crawler import CrawlerProcess
+from scrapy.settings import Settings
 from scrapy_playwright.page import PageMethod
 import logging
 
 class TestSpider(scrapy.Spider):
-    name = "test"
-    start_url = "https://www.chevrolet.com/shopping/configurator"
+    name = "what-the-fuck"
+    start_url = "https://www.ford.com/"
     headers = {
-        "Dealerid": "0",
-        "Oemid": "GM",
-        "Programid": "CHEVROLET",
-        "Tenantid": "0",
-        "Content-Type": "application/json",
-        "Accept": "application/json, text/plain, */*",
-        "Origin": "https://www.chevrolet.com",
-        "Referer": "https://www.chevrolet.com/shopping/configurator",
+        "Accept": "*/*",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive"
     }
 
-    # custom_settings = {
-    #     "PLAYWRIGHT_BROWSER_TYPE": "chromium",
-    #     "PLAYWRIGHT_LAUNCH_OPTIONS": {"headless": False, "slow_mo": 500},
-    #     "LOG_LEVEL": "DEBUG",
-    #     "PLAYWRIGHT_DEFAULT_NAVIGATION_TIMEOUT": 60000,  # 60 seconds
-    #     "PLAYWRIGHT_MAX_PAGES_PER_CONTEXT": 1,
-    #     "PLAYWRIGHT_CONTEXTS": {
-    #         "default": {
-    #             "viewport": {"width": 1920, "height": 1080},
-    #             "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    #         }
-    #     },
-    # }
-
     def start_requests(self):
+        self.logger.info("Parse initial called")
         yield scrapy.Request(
-            url=self.start_url,
-            method="GET",
-            callback=self.after_get,
-            meta={"cookiejar": 1}
-        )
-
-    def after_get(self, response):
-        self.logger.info("Cookies: %s", response.meta.get("cookiejar"))
-        yield scrapy.Request(
-            url="https://www.chevrolet.com/shopping/configurator/truck/2024/silverado/silverado-ev/exterior?buildCode=&radius=255&zipCode=48243",
-            method="GET",
-            headers=self.headers,
-            callback=self.parse_response,
+            url='https://www.ford.com/fps/script/Ford/USA',
+            method='GET',
+            callback=self.parse_json,
             meta={
                 "playwright": True,
-                "playwright_include_page": True,
                 "playwright_context": "default",
-                "playwright_page_close": False,  # Prevent premature page closure
+                "playwright_page_close": False,
                 "playwright_context_kwargs": {
                     "viewport": {"width": 1920, "height": 1080},
                     "user_agent": self.headers["User-Agent"],
-                },
-                "playwright_page_methods": [
-                    PageMethod("wait_for_load_state", "domcontentloaded", timeout=60000),
-                    # Wait for the specific div to be rendered
-                    PageMethod("wait_for_selector", "div.configuratorControlPanelSectionOptionsV1_optionsContainer__wkZjs", timeout=60000),
-                    PageMethod("wait_for_timeout", 15000),  # Additional wait for rendering
-                    PageMethod("screenshot", path="chevy_debug.png", full_page=True),
-                ],
-                "playwright_page_event_handlers": {
-                    "console": lambda msg: self.logger.info(f"Console: {msg.text}"),
-                    "pageerror": lambda err: self.logger.error(f"Page error: {err}"),
-                    "request": lambda req: self.logger.debug(f"Request: {req.url}"),
-                    "response": lambda res: self.logger.debug(f"Response: {res.url} {res.status}"),
                 },
                 "cookiejar": 1,
             },
             errback=self.handle_error,
         )
+
+    def parse_json(self, response):
+        # Get the raw JavaScript content from the response
+        js_content = response.text
+
+        # Use regex to find the vdmActiveNameplates variable
+        pattern = r'var vdmActiveNameplates = ({.*?});'
+        match = re.search(pattern, js_content, re.DOTALL)
+
+        if match:
+            # Extract the JSON string
+            json_str = match.group(1)
+            try:
+                # Parse the JSON string into a Python dictionary
+                vdm_active_nameplates = json.loads(json_str)
+                self.logger.info(vdm_active_nameplates)
+                # Yield or process the JSON data as needed
+                yield {'vdmActiveNameplates': vdm_active_nameplates}
+            except json.JSONDecodeError as e:
+                self.logger.error(f"Failed to parse JSON: {e}")
+        else:
+            self.logger.error("Could not find vdmActiveNameplates in the response")
 
     def parse_response(self, response):
         self.logger.info("Response body length: %d", len(response.text))

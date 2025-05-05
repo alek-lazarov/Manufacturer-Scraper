@@ -40,8 +40,8 @@ COOKIES_ENABLED = True
 REQUEST_FINGERPRINTER_IMPLEMENTATION = "2.7"
 
 # Logging settings
-LOG_LEVEL = "INFO"
-LOG_FILE = "scrapy.log"
+# LOG_LEVEL = "DEBUG"
+# LOG_FILE = "scrapy.log"
 
 # Disable robots.txt
 ROBOTSTXT_OBEY = False
