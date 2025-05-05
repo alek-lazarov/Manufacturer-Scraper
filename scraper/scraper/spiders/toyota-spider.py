@@ -134,15 +134,35 @@ class ToyotaSpider(scrapy.Spider):
             localModel['bodyType'] = bodyType.get('value', '')
             break  # Just take the first one
 
-        # Extract packages - fixed the issue here
-        package_ids = []
+        # Extract packages with detailed information
+        package_details = []
+        # Process packages from trims directly, including the MSRP
         for trim in grade_data.get('trims', []):
-            # packageIds is a list of dictionaries, each with an 'id' key
+            # packageIds is a list of dictionaries with 'id' and 'msrp' keys
             for package in trim.get('packageIds', []):
                 if isinstance(package, dict) and 'id' in package:
-                    package_ids.append(package['id'])
+                    package_id = package.get('id', '')
+                    # Get MSRP directly from the packageIds array
+                    package_msrp = package.get('msrp', {}).get('value', '')
 
-        localModel['packages'] = ','.join(package_ids) if package_ids else ""
+                    # Find the matching package in packages data to get description
+                    package_title = ""
+                    package_description = ""
+                    for pkg in config_data.get('packages', []):
+                        if pkg.get('id') == package_id:
+                            package_title = pkg.get('title', '')
+                            package_description = pkg.get('description', '')
+                            break
+
+                    package_details.append({
+                        'id': package_id,
+                        'description': package_description,
+                        'title': package_title,
+                        'msrp': package_msrp
+                    })
+
+        # Serialize package details to JSON string
+        localModel['packages'] = json.dumps(package_details) if package_details else ""
 
         # Extract other vehicle details
         for trim in grade_data.get('trims', []):
@@ -223,3 +243,7 @@ settings.set("DOWNLOADER_MIDDLEWARES", {
 process = CrawlerProcess(settings)
 process.crawl(ToyotaSpider)
 process.start()
+
+
+
+
