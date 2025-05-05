@@ -243,7 +243,3 @@ settings.set("DOWNLOADER_MIDDLEWARES", {
 process = CrawlerProcess(settings)
 process.crawl(ToyotaSpider)
 process.start()
-
-
-
-
