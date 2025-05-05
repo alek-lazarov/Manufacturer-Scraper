@@ -33,6 +33,7 @@ class ToyotaSpider(scrapy.Spider):
             "bodyType",
             "fuelType",
             "trim",
+            "url",
             "cabType", # Crew Cab ,  Regular Cab, Extended Cab
             "bedLength" # Short Bed  ( < 6ft) , Standard Bed ( 6ft > x < 8ft ), Long Bed   ( > 8ft ),
         ]
@@ -65,6 +66,7 @@ class ToyotaSpider(scrapy.Spider):
                     'bodyType': "",
                     'fuelType': "",
                     'trim': "",
+                    'url': "",
                     'cabType': "",
                     'bedLength': ""
                 }
@@ -89,6 +91,7 @@ class ToyotaSpider(scrapy.Spider):
                     localModel['trim'] = grade['gradeName']
                     body = self.construct_trim_request(seriesId,year, grade['gradeName'])
                     json_body = json.dumps(body)
+                    localModel['url'] = grade['image']['url']
                     yield scrapy.Request(
                         self.url,
                         method='POST',
@@ -99,7 +102,7 @@ class ToyotaSpider(scrapy.Spider):
             )
         yield {}
 
-    def parse_trim(self, response, model):
+    def parse_trim(self, response, model): #packages in build
         localModel = copy.deepcopy(model)
 
         trim_response = json.loads(response.text)
@@ -111,18 +114,27 @@ class ToyotaSpider(scrapy.Spider):
                 "hex": exteriorColor['hexCode'][0],
             })
 
-        for exteriorColor in trim_response['data']['getConfigByGrade']['interiorColors']:
+        for interiorColors in trim_response['data']['getConfigByGrade']['interiorColors']:
             localModel['interiorColors'].append({
-                    "name": exteriorColor['name'],
-                    "price": exteriorColor['msrp']['value'],
-                    "hex": exteriorColor['hexCode'][0],
+                    "name": interiorColors['name'],
+                    "price": interiorColors['msrp']['value'],
+                    "hex": interiorColors['hexCode'][0],
             })
         localModel['msrp'] = trim_response['data']['getConfigByGrade']['grade']['baseMsrp']['value']
+
+        for bodyType in trim_response['data']['getConfigByGrade']['categories']:
+            localModel['bodyType'] = bodyType['value']
 
         for trim in trim_response['data']['getConfigByGrade']['grade']['trims']:
             localModel['fuelType'] = trim['fuelType']
             localModel['driveType'] = trim['powertrain']['drive']['value']
             localModel['transmissionType'] = "Automatic"
+
+            if trim['cabBed'] is None:
+                pass
+            else:
+                localModel['bedLength'] = trim['cabBed']['bedLength']
+                localModel['cabType'] = trim['cabBed']['description']
             yield localModel
 
 
@@ -164,19 +176,20 @@ class ToyotaSpider(scrapy.Spider):
             },
         }
 
-# settings = Settings()
-#
-# settings.set("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-#
-# settings.set("DOWNLOADER_MIDDLEWARES", {
-#     "scraper.scraper.middlewares.ProxyMiddleware": 543,
-# })
-#
-# # settings.set("FEED_URI", 'output.csv')
-# # settings.set("FEED_FORMAT", 'csv')
-#
-# # settings.set("TWISTED_REACTOR", "twisted.internet.asyncioreactor.AsyncioSelectorReactor")
-#
-# process = CrawlerProcess(settings)
-# process.crawl(ToyotaSpider)
-# process.start()
+settings = Settings()
+
+settings.set("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+settings.set("DOWNLOADER_MIDDLEWARES", {
+    "scraper.scraper.middlewares.ProxyMiddleware": 543,
+})
+
+# settings.set("FEED_URI", 'output.csv')
+# settings.set("FEED_FORMAT", 'csv')
+
+# settings.set("TWISTED_REACTOR", "twisted.internet.asyncioreactor.AsyncioSelectorReactor")
+
+process = CrawlerProcess(settings)
+process.crawl(ToyotaSpider)
+process.start()
+
