@@ -96,24 +96,36 @@ class ToyotaSpider(scrapy.Spider):
                 for grade in yearData['grades']:
                     # Extract basic grade information
                     gradeName = grade['gradeName']
-                    grade_image_url = grade['image']['url'] if grade['image'] else ""
+                    grade_image_url = grade['image']['url'] if grade['image'] and 'url' in grade['image'] else ""
 
                     # Process each trim within this grade - each represents a unique configuration
-                    for trim in grade['trims']:
-                        # Create a unique identifier for this trim configuration
+                    for trim_index, trim in enumerate(grade['trims']):
+                        # Create a much more specific unique identifier for this trim configuration
                         trim_code = trim.get('code', '')
+
+                        # Extract MSRP - this is crucial for identifying unique configurations
+                        msrp_value = ""
+                        if trim.get('msrp') and isinstance(trim.get('msrp'), dict) and 'value' in trim.get('msrp'):
+                            msrp_value = trim.get('msrp').get('value', '')
+                        elif trim.get('defaultConfig') and isinstance(trim.get('defaultConfig'), dict):
+                            default_msrp = trim.get('defaultConfig').get('msrp')
+                            if isinstance(default_msrp, dict) and 'value' in default_msrp:
+                                msrp_value = default_msrp.get('value', '')
 
                         # Safely extract bed length
                         cab_bed = trim.get('cabBed')
                         bed_length = cab_bed.get('bedLength', '') if cab_bed else ''
+                        cab_type = cab_bed.get('label', '') if cab_bed else ''
 
                         # Safely extract drive type
-                        powertrain = trim.get('powertrain', {})
-                        drive = powertrain.get('drive', {}) if powertrain else {}
-                        drive_type = drive.get('value', '') if drive else ''
+                        powertrain = trim.get('powertrain')
+                        drive_type = ""
+                        if powertrain and 'drive' in powertrain and powertrain['drive'] and 'value' in powertrain[
+                            'drive']:
+                            drive_type = powertrain['drive']['value']
 
-                        # Create a unique identifier
-                        trim_identifier = f"{gradeName}_{trim_code}_{bed_length}_{drive_type}"
+                        # Create a unique identifier that includes all key differentiating factors
+                        trim_identifier = f"{gradeName}_{trim_code}_{bed_length}_{drive_type}_{msrp_value}_{trim_index}"
 
                         # Skip if we've already processed this configuration
                         if trim_identifier in processed_trims:
@@ -127,33 +139,30 @@ class ToyotaSpider(scrapy.Spider):
                         trim_model['trim'] = gradeName
                         trim_model['url'] = grade_image_url
 
+                        # Set the MSRP directly from what we've extracted
+                        trim_model['msrp'] = msrp_value
+
                         # Extract cab and bed information
                         if cab_bed:
                             trim_model['bedLength'] = bed_length
-                            trim_model['cabType'] = cab_bed.get('label', '')
+                            trim_model['cabType'] = cab_type
 
                         # Extract powertrain information
                         if powertrain:
                             trim_model['driveType'] = drive_type
 
                             engine = powertrain.get('engine')
-                            if engine:
-                                trim_model['engineType'] = engine.get('value', '')
+                            if engine and 'value' in engine:
+                                trim_model['engineType'] = engine['value']
 
                             transmission = powertrain.get('transmission')
-                            if transmission:
-                                trim_model['transmissionType'] = transmission.get('value', '')
+                            if transmission and 'value' in transmission:
+                                trim_model['transmissionType'] = transmission['value']
                             else:
                                 trim_model['transmissionType'] = "Automatic"  # Default
 
-                        # Get MSRP for this specific trim
-                        msrp = trim.get('msrp', {})
-                        if msrp and isinstance(msrp, dict) and 'value' in msrp:
-                            trim_model['msrp'] = msrp.get('value', '')
-                        elif trim.get('defaultConfig', {}) and isinstance(trim.get('defaultConfig'), dict):
-                            default_msrp = trim.get('defaultConfig', {}).get('msrp', {})
-                            if isinstance(default_msrp, dict) and 'value' in default_msrp:
-                                trim_model['msrp'] = default_msrp.get('value', '')
+                        # Extract other trim details
+                        trim_model['fuelType'] = trim.get('fuelType', '')
 
                         # Request additional grade details for colors and packages
                         body = self.construct_trim_request(seriesId, year, gradeName)
