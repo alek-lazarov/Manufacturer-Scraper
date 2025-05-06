@@ -34,6 +34,7 @@ class ToyotaSpider(scrapy.Spider):
             "fuelType",
             "trim",
             "url",
+            "msrp",
             "packages",
             "cabType",  # Crew Cab ,  Regular Cab, Extended Cab
             "bedLength"  # Short Bed  ( < 6ft) , Standard Bed ( 6ft > x < 8ft ), Long Bed   ( > 8ft ),
@@ -68,6 +69,7 @@ class ToyotaSpider(scrapy.Spider):
                     'fuelType': "",
                     'trim': "",
                     'url': "",
+                    "msrp": "",
                     'packages': "",
                     'cabType': "",
                     'bedLength': ""
@@ -85,107 +87,168 @@ class ToyotaSpider(scrapy.Spider):
 
     def parse_all_trims(self, response, model, seriesId, year):
         trims_response = json.loads(response.text)
+
+        # Keep track of processed trim configurations to avoid duplicates
+        processed_trims = set()
+
         for seriesData in trims_response['data']['getSeries']['seriesData']:
             for yearData in seriesData['yearSpecificData']:
                 for grade in yearData['grades']:
-                    localModel = copy.deepcopy(model)
-                    localModel['trim'] = grade['gradeName']
-                    body = self.construct_trim_request(seriesId, year, grade['gradeName'])
-                    json_body = json.dumps(body)
-                    localModel['url'] = grade['image']['url'] if grade['image'] else ""
-                    yield scrapy.Request(
-                        self.url,
-                        method='POST',
-                        body=json_body,
-                        headers=self.headers,
-                        callback=self.parse_trim,
-                        cb_kwargs={'model': localModel}
-                    )
-        yield {}
+                    # Extract basic grade information
+                    gradeName = grade['gradeName']
+                    grade_image_url = grade['image']['url'] if grade['image'] else ""
 
-    def parse_trim(self, response, model):  # packages in build
+                    # Process each trim within this grade - each represents a unique configuration
+                    for trim in grade['trims']:
+                        # Create a unique identifier for this trim configuration
+                        trim_code = trim.get('code', '')
+
+                        # Safely extract bed length
+                        cab_bed = trim.get('cabBed')
+                        bed_length = cab_bed.get('bedLength', '') if cab_bed else ''
+
+                        # Safely extract drive type
+                        powertrain = trim.get('powertrain', {})
+                        drive = powertrain.get('drive', {}) if powertrain else {}
+                        drive_type = drive.get('value', '') if drive else ''
+
+                        # Create a unique identifier
+                        trim_identifier = f"{gradeName}_{trim_code}_{bed_length}_{drive_type}"
+
+                        # Skip if we've already processed this configuration
+                        if trim_identifier in processed_trims:
+                            continue
+
+                        # Mark this configuration as processed
+                        processed_trims.add(trim_identifier)
+
+                        # Create a specific model for this trim/configuration
+                        trim_model = copy.deepcopy(model)
+                        trim_model['trim'] = gradeName
+                        trim_model['url'] = grade_image_url
+
+                        # Extract cab and bed information
+                        if cab_bed:
+                            trim_model['bedLength'] = bed_length
+                            trim_model['cabType'] = cab_bed.get('label', '')
+
+                        # Extract powertrain information
+                        if powertrain:
+                            trim_model['driveType'] = drive_type
+
+                            engine = powertrain.get('engine')
+                            if engine:
+                                trim_model['engineType'] = engine.get('value', '')
+
+                            transmission = powertrain.get('transmission')
+                            if transmission:
+                                trim_model['transmissionType'] = transmission.get('value', '')
+                            else:
+                                trim_model['transmissionType'] = "Automatic"  # Default
+
+                        # Extract other trim details
+                        trim_model['fuelType'] = trim.get('fuelType', '')
+
+                        # Get MSRP for this specific trim
+                        msrp = trim.get('msrp', {})
+                        if msrp and isinstance(msrp, dict) and 'value' in msrp:
+                            trim_model['msrp'] = msrp.get('value', '')
+                        elif trim.get('defaultConfig', {}) and isinstance(trim.get('defaultConfig'), dict):
+                            default_msrp = trim.get('defaultConfig', {}).get('msrp', {})
+                            if isinstance(default_msrp, dict) and 'value' in default_msrp:
+                                trim_model['msrp'] = default_msrp.get('value', '')
+
+                        # Request additional grade details for colors and packages
+                        body = self.construct_trim_request(seriesId, year, gradeName)
+                        json_body = json.dumps(body)
+
+                        yield scrapy.Request(
+                            self.url,
+                            method='POST',
+                            body=json_body,
+                            headers=self.headers,
+                            callback=self.parse_trim,
+                            cb_kwargs={
+                                'model': trim_model,
+                                'trim_code': trim_code
+                            }
+                        )
+
+    def parse_trim(self, response, model, trim_code):
         localModel = copy.deepcopy(model)
 
         trim_response = json.loads(response.text)
         config_data = trim_response.get('data', {}).get('getConfigByGrade', {})
 
         # Extract exterior colors
+        exteriorColors = []
         for exteriorColor in config_data.get('exteriorColors', []):
-            localModel['exteriorColors'].append({
+            exteriorColors.append({
                 "name": exteriorColor.get('title', ''),
                 "price": exteriorColor.get('msrp', {}).get('value', ''),
                 "hex": exteriorColor.get('hexCode', [''])[0] if exteriorColor.get('hexCode') else '',
             })
+        localModel['exteriorColors'] = exteriorColors
 
         # Extract interior colors
-        for interiorColors in config_data.get('interiorColors', []):
-            localModel['interiorColors'].append({
-                "name": interiorColors.get('name', ''),
-                "price": interiorColors.get('msrp', {}).get('value', ''),
-                "hex": interiorColors.get('hexCode', [''])[0] if interiorColors.get('hexCode') else '',
+        interiorColors = []
+        for interiorColor in config_data.get('interiorColors', []):
+            interiorColors.append({
+                "name": interiorColor.get('name', ''),
+                "price": interiorColor.get('msrp', {}).get('value', ''),
+                "hex": interiorColor.get('hexCode', [''])[0] if interiorColor.get('hexCode') else '',
             })
-
-        # Extract MSRP
-        grade_data = config_data.get('grade', {})
-        localModel['msrp'] = grade_data.get('baseMsrp', {}).get('value', '')
+        localModel['interiorColors'] = interiorColors
 
         # Extract body type
-        for bodyType in config_data.get('categories', []):
-            localModel['bodyType'] = bodyType.get('value', '')
-            break  # Just take the first one
+        categories = config_data.get('categories', [])
+        if categories:
+            localModel['bodyType'] = categories[0].get('value', '')
 
-        # Extract packages with detailed information
+        # Extract packages specific to this trim code
         package_details = []
-        # Process packages from trims directly, including the MSRP
+        grade_data = config_data.get('grade', {})
+
+        # Try to find packages specific to this trim code
+        trim_found = False
         for trim in grade_data.get('trims', []):
-            # packageIds is a list of dictionaries with 'id' and 'msrp' keys
-            for package in trim.get('packageIds', []):
-                if isinstance(package, dict) and 'id' in package:
-                    package_id = package.get('id', '')
-                    # Get MSRP directly from the packageIds array
-                    package_msrp = package.get('msrp', {}).get('value', '')
+            if trim.get('code') == trim_code:
+                trim_found = True
+                for package in trim.get('packageIds', []):
+                    if isinstance(package, dict) and 'id' in package:
+                        package_id = package.get('id', '')
+                        package_msrp = package.get('msrp', {}).get('value', '')
 
-                    # Find the matching package in packages data to get description
-                    package_title = ""
-                    package_description = ""
-                    for pkg in config_data.get('packages', []):
-                        if pkg.get('id') == package_id:
-                            package_title = pkg.get('title', '')
-                            package_description = pkg.get('description', '')
-                            break
+                        # Find matching package details
+                        for pkg in config_data.get('packages', []):
+                            if pkg.get('id') == package_id:
+                                package_details.append({
+                                    'id': package_id,
+                                    'description': pkg.get('description', ''),
+                                    'title': pkg.get('title', ''),
+                                    'msrp': package_msrp
+                                })
+                                break
 
+        # If no trim-specific packages were found, try to get general packages
+        if not trim_found or not package_details:
+            for pkg in config_data.get('packages', []):
+                if pkg.get('id'):
                     package_details.append({
-                        'id': package_id,
-                        'description': package_description,
-                        'title': package_title,
-                        'msrp': package_msrp
+                        'id': pkg.get('id', ''),
+                        'description': pkg.get('description', ''),
+                        'title': pkg.get('title', ''),
+                        'msrp': pkg.get('msrp', {}).get('value', '') if pkg.get('msrp') else ''
                     })
+
+        # Clean up the model by removing any temporary fields we added
+        if 'trim_code' in localModel:
+            del localModel['trim_code']
 
         # Serialize package details to JSON string
         localModel['packages'] = json.dumps(package_details) if package_details else ""
 
-        # Extract other vehicle details
-        for trim in grade_data.get('trims', []):
-            localModel['fuelType'] = trim.get('fuelType', '')
-
-            # Extract powertrain details
-            powertrain = trim.get('powertrain', {})
-            if powertrain:
-                drive = powertrain.get('drive', {})
-                if drive:
-                    localModel['driveType'] = drive.get('value', '')
-
-            localModel['transmissionType'] = "Automatic"  # Default as per original code
-
-            # Extract cab and bed information
-            cab_bed = trim.get('cabBed')
-            if cab_bed:
-                localModel['bedLength'] = cab_bed.get('bedLength', '')
-                localModel['cabType'] = cab_bed.get('description', '')
-
-            yield localModel
-            # Break after first trim since we've captured the information
-            break
+        yield localModel
 
     def construct_models_request(self):
         return {
