@@ -146,9 +146,6 @@ class ToyotaSpider(scrapy.Spider):
                             else:
                                 trim_model['transmissionType'] = "Automatic"  # Default
 
-                        # Extract other trim details
-                        trim_model['fuelType'] = trim.get('fuelType', '')
-
                         # Get MSRP for this specific trim
                         msrp = trim.get('msrp', {})
                         if msrp and isinstance(msrp, dict) and 'value' in msrp:
@@ -247,6 +244,10 @@ class ToyotaSpider(scrapy.Spider):
 
         # Serialize package details to JSON string
         localModel['packages'] = json.dumps(package_details) if package_details else ""
+
+        # Extract other vehicle details
+        for trim in grade_data.get('trims', []):
+            localModel['fuelType'] = trim.get('fuelType', '')
 
         yield localModel
 
