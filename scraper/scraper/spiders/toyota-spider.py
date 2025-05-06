@@ -1,318 +1,413 @@
 import copy
 import json
+import os
 from datetime import datetime
 
 import scrapy
-from scrapy import Request
 from scrapy.crawler import CrawlerProcess
-from scrapy.settings import Settings
 
 
 class ToyotaSpider(scrapy.Spider):
     name = 'toyota'
     url = "https://orchestrator.configurator.toyota.com/graphql"
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'bap-guid': '692c6b8b-ae4a-4c46-8c71-c05abbaedff9',
     }
 
     current_datetime = datetime.now()
-    formatted_datetime = current_datetime.strftime('%Y-%m-%d %H-%M-%S')
-    filepath = f"Manufacturer_Crawlers/output/toyota_{formatted_datetime}.csv"
+    formatted_datetime = current_datetime.strftime('%Y-%m-%d_%H-%M-%S')
+    filepath = f"output/toyota_{formatted_datetime}.csv"
 
     custom_settings = {
-        "FEED_FORMAT": "csv",
-        "FEED_URI": filepath,
-        "FEED_EXPORT_FIELDS": [
-            "make",
-            "model",
-            "year",
-            "exteriorColors",
-            "interiorColors",
-            "driveType",
-            "transmissionType",
-            "bodyType",
-            "fuelType",
-            "trim",
-            "url",
-            "msrp",
-            "packages",
-            "cabType",  # Crew Cab ,  Regular Cab, Extended Cab
-            "bedLength"  # Short Bed  ( < 6ft) , Standard Bed ( 6ft > x < 8ft ), Long Bed   ( > 8ft ),
-        ]
+        "FEEDS": {
+            filepath: {
+                "format": "csv",
+                "fields": [
+                    "make", "model", "year", "trim", "msrp", "exteriorColors", "interiorColors",
+                    "driveType", "transmissionType", "engineType", "fuelType", "bodyType", "cabType",
+                    "bedLength", "packages", "url"
+                ],
+            },
+        },
+        "DOWNLOAD_DELAY": 1.5,
+        "LOG_LEVEL": "INFO",
+        "CONCURRENT_REQUESTS": 4,
+        "RETRY_TIMES": 3,
+        "RETRY_HTTP_CODES": [403, 429, 500, 502, 503, 504],
     }
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
+        self.logger.info(f"Output will be saved to: {self.filepath}")
+
     def start_requests(self):
-        body = self.construct_models_request()
-        json_body = json.dumps(body)
-        yield scrapy.Request(
-            self.url,
-            method='POST',
-            body=json_body,
-            headers=self.headers,
-            callback=self.parse_models
-        )
-
-    def parse_models(self, response):
-        makes_response = json.loads(response.text)
-
-        for model in makes_response['data']['getSeries']['seriesData']:
-            for year in model['yearSpecificData']:
-                localModel = {
-                    "make": "Toyota",
-                    "model": model['name'],
-                    "year": year['year'],
-                    'exteriorColors': [],
-                    'interiorColors': [],
-                    'driveType': "",
-                    'transmissionType': "",
-                    'bodyType': "",
-                    'fuelType': "",
-                    'trim': "",
-                    'url': "",
-                    "msrp": "",
-                    'packages': "",
-                    'cabType': "",
-                    'bedLength': ""
-                }
-                body = self.construct_trims_request(model['id'], year['year'])
-                json_body = json.dumps(body)
-                yield scrapy.Request(
-                    self.url,
-                    method='POST',
-                    body=json_body,
-                    headers=self.headers,
-                    callback=self.parse_all_trims,
-                    cb_kwargs={'model': localModel, 'seriesId': model['id'], 'year': year['year']}
-                )
-
-    def parse_all_trims(self, response, model, seriesId, year):
-        trims_response = json.loads(response.text)
-
-        # Keep track of processed trim configurations to avoid duplicates
-        processed_trims = set()
-
-        for seriesData in trims_response['data']['getSeries']['seriesData']:
-            for yearData in seriesData['yearSpecificData']:
-                for grade in yearData['grades']:
-                    # Extract basic grade information
-                    gradeName = grade['gradeName']
-                    grade_image_url = grade['image']['url'] if grade['image'] and 'url' in grade['image'] else ""
-
-                    # Process each trim within this grade - each represents a unique configuration
-                    for trim_index, trim in enumerate(grade['trims']):
-                        # Create a much more specific unique identifier for this trim configuration
-                        trim_code = trim.get('code', '')
-
-                        # Extract MSRP - this is crucial for identifying unique configurations
-                        msrp_value = ""
-                        if trim.get('msrp') and isinstance(trim.get('msrp'), dict) and 'value' in trim.get('msrp'):
-                            msrp_value = trim.get('msrp').get('value', '')
-                        elif trim.get('defaultConfig') and isinstance(trim.get('defaultConfig'), dict):
-                            default_msrp = trim.get('defaultConfig').get('msrp')
-                            if isinstance(default_msrp, dict) and 'value' in default_msrp:
-                                msrp_value = default_msrp.get('value', '')
-
-                        # Safely extract bed length
-                        cab_bed = trim.get('cabBed')
-                        bed_length = cab_bed.get('bedLength', '') if cab_bed else ''
-                        cab_type = cab_bed.get('label', '') if cab_bed else ''
-
-                        # Safely extract drive type
-                        powertrain = trim.get('powertrain')
-                        drive_type = ""
-                        if powertrain and 'drive' in powertrain and powertrain['drive'] and 'value' in powertrain[
-                            'drive']:
-                            drive_type = powertrain['drive']['value']
-
-                        # Create a unique identifier that includes all key differentiating factors
-                        trim_identifier = f"{gradeName}_{trim_code}_{bed_length}_{drive_type}_{msrp_value}_{trim_index}"
-
-                        # Skip if we've already processed this configuration
-                        if trim_identifier in processed_trims:
-                            continue
-
-                        # Mark this configuration as processed
-                        processed_trims.add(trim_identifier)
-
-                        # Create a specific model for this trim/configuration
-                        trim_model = copy.deepcopy(model)
-                        trim_model['trim'] = gradeName
-                        trim_model['url'] = grade_image_url
-
-                        # Set the MSRP directly from what we've extracted
-                        trim_model['msrp'] = msrp_value
-
-                        # Extract cab and bed information
-                        if cab_bed:
-                            trim_model['bedLength'] = bed_length
-                            trim_model['cabType'] = cab_type
-
-                        # Extract powertrain information
-                        if powertrain:
-                            trim_model['driveType'] = drive_type
-
-                            engine = powertrain.get('engine')
-                            if engine and 'value' in engine:
-                                trim_model['engineType'] = engine['value']
-
-                            transmission = powertrain.get('transmission')
-                            if transmission and 'value' in transmission:
-                                trim_model['transmissionType'] = transmission['value']
-                            else:
-                                trim_model['transmissionType'] = "Automatic"  # Default
-
-                        # Extract other trim details
-                        trim_model['fuelType'] = trim.get('fuelType', '')
-
-                        # Request additional grade details for colors and packages
-                        body = self.construct_trim_request(seriesId, year, gradeName)
-                        json_body = json.dumps(body)
-
-                        yield scrapy.Request(
-                            self.url,
-                            method='POST',
-                            body=json_body,
-                            headers=self.headers,
-                            callback=self.parse_trim,
-                            cb_kwargs={
-                                'model': trim_model,
-                                'trim_code': trim_code
+        body = {
+            "query": """
+                query GetSeries($brand: Brand!, $language: Language, $region: Region!) {
+                    getSeries(brand: $brand, language: $language, region: $region) {
+                        seriesData {
+                            id
+                            name
+                            yearSpecificData {
+                                year
                             }
-                        )
-
-    def parse_trim(self, response, model, trim_code):
-        localModel = copy.deepcopy(model)
-
-        trim_response = json.loads(response.text)
-        config_data = trim_response.get('data', {}).get('getConfigByGrade', {})
-
-        # Extract exterior colors
-        exteriorColors = []
-        for exteriorColor in config_data.get('exteriorColors', []):
-            exteriorColors.append({
-                "name": exteriorColor.get('title', ''),
-                "price": exteriorColor.get('msrp', {}).get('value', ''),
-                "hex": exteriorColor.get('hexCode', [''])[0] if exteriorColor.get('hexCode') else '',
-            })
-        localModel['exteriorColors'] = exteriorColors
-
-        # Extract interior colors
-        interiorColors = []
-        for interiorColor in config_data.get('interiorColors', []):
-            interiorColors.append({
-                "name": interiorColor.get('name', ''),
-                "price": interiorColor.get('msrp', {}).get('value', ''),
-                "hex": interiorColor.get('hexCode', [''])[0] if interiorColor.get('hexCode') else '',
-            })
-        localModel['interiorColors'] = interiorColors
-
-        # Extract body type
-        categories = config_data.get('categories', [])
-        if categories:
-            localModel['bodyType'] = categories[0].get('value', '')
-
-        # Extract packages specific to this trim code
-        package_details = []
-        grade_data = config_data.get('grade', {})
-
-        # Try to find packages specific to this trim code
-        trim_found = False
-        for trim in grade_data.get('trims', []):
-            if trim.get('code') == trim_code:
-                trim_found = True
-                for package in trim.get('packageIds', []):
-                    if isinstance(package, dict) and 'id' in package:
-                        package_id = package.get('id', '')
-                        package_msrp = package.get('msrp', {}).get('value', '')
-
-                        # Find matching package details
-                        for pkg in config_data.get('packages', []):
-                            if pkg.get('id') == package_id:
-                                package_details.append({
-                                    'id': package_id,
-                                    'description': pkg.get('description', ''),
-                                    'title': pkg.get('title', ''),
-                                    'msrp': package_msrp
-                                })
-                                break
-
-        # If no trim-specific packages were found, try to get general packages
-        if not trim_found or not package_details:
-            for pkg in config_data.get('packages', []):
-                if pkg.get('id'):
-                    package_details.append({
-                        'id': pkg.get('id', ''),
-                        'description': pkg.get('description', ''),
-                        'title': pkg.get('title', ''),
-                        'msrp': pkg.get('msrp', {}).get('value', '') if pkg.get('msrp') else ''
-                    })
-
-        # Clean up the model by removing any temporary fields we added
-        if 'trim_code' in localModel:
-            del localModel['trim_code']
-
-        # Serialize package details to JSON string
-        localModel['packages'] = json.dumps(package_details) if package_details else ""
-
-        # Extract other vehicle details
-        for trim in grade_data.get('trims', []):
-            localModel['fuelType'] = trim.get('fuelType', '')
-
-        yield localModel
-
-    def construct_models_request(self):
-        return {
-            "query": "query GetSeries($brand: Brand!, $language: Language, $region: Region!, $seriesId: String, $showApplicableSeriesForVisualizer: Boolean, $year: Int) {  getSeries(    brand: $brand    language: $language    region: $region    seriesId: $seriesId    showApplicableSeriesForVisualizer: $showApplicableSeriesForVisualizer    year: $year  ) {    seriesData {      id      name      shortName      yearSpecificData {        year        startingMsrp {          disclaimer          value        }        mileage {          category          city          combined          highway          isAvailable          mpge          range        }        seating        categories {          id          value        }        grades {          gradeName          trims {            code            fuelType            powertrain {              drive {                description                disclaimer                icon                value              }              engine {                description                disclaimer                icon                value              }              horsepower {                description                disclaimer                icon                value              }              transmission {                description                disclaimer                icon                value              }            }          }        }      }    }  }}",
+                        }
+                    }
+                }
+            """,
             "variables": {
                 "brand": "TOYOTA",
                 "language": "EN",
-                "region": {"zipCode": "33444"},
+                "region": {"zipCode": "33444"}
             }
         }
+        yield scrapy.Request(
+            url=self.url,
+            method='POST',
+            body=json.dumps(body),
+            headers=self.headers,
+            callback=self.parse_series
+        )
 
-    def construct_trims_request(self, seriesId, year):
-        return {
-            "query": "query GetSeries($brand: Brand!, $language: Language, $region: Region!, $seriesId: String, $showApplicableSeriesForVisualizer: Boolean, $year: Int) {\n  getSeries(\n    brand: $brand\n    language: $language\n    region: $region\n    seriesId: $seriesId\n    showApplicableSeriesForVisualizer: $showApplicableSeriesForVisualizer\n    year: $year\n  ) {\n    exteriorColors {\n      code\n      hexCode\n      id\n    }\n    seriesData {\n      name\n      yearSpecificData {\n        grades {\n          exteriorColorIds\n          gradeName\n          image {\n            alias\n            disclaimer\n            isHero\n            url\n          }\n          mileage {\n            category\n            city\n            combined\n            highway\n            isAvailable\n            mpge\n            range\n          }\n          trims {\n            cabBed {\n              bedDepth\n              bedLength\n              bedWidth\n              betweenWheelWell\n              cabDetails\n              compatibilityWithCurrentConfig {\n                availableWithTrims\n                isCompatible\n                requiredItems {\n                  itemCode\n                  itemType\n                }\n              }\n              description\n              id\n              label\n              overallHeight\n              overallLength\n              overallWidth\n              cabDescription\n              bedDescription\n            }\n            code\n            defaultConfig {\n              msrp {\n                disclaimer\n                value\n              }\n            }\n            isDefaultTrim\n            images {\n              url\n            }\n            mileage {\n              category\n              city\n              combined\n              highway\n              isAvailable\n              mpge\n              range\n            }\n            msrp {\n              value\n            }\n            powertrain {\n              drive {\n                value\n              }\n              engine {\n                value\n              }\n              transmission {\n                value\n              }\n            }\n            seating {\n              value\n            }\n          }\n        }\n        year\n      }\n    }\n  }\n}\n",
-            "variables": {
-                "brand": "TOYOTA",
-                "language": "EN",
-                "region": {"zipCode": "33444"},
-                "seriesId": seriesId,
-                "showApplicableSeriesForVisualizer": True,
-                "year": year
-            },
-        }
+    def parse_series(self, response):
+        try:
+            data = json.loads(response.text)
+            if 'errors' in data:
+                self.logger.error(f"API errors in series request: {data['errors']}")
+                return
 
-    def construct_trim_request(self, seriesId, year, gradeName):
-        return {
-            "query": "query GetConfigByGrade($configInputGrade: ConfigInputGrade!) {\n  getConfigByGrade(configInputGrade: $configInputGrade) {\n    accessories {\n      code\n      compatibilityWithCurrentConfig {\n        availableWithTrims\n        isCompatible\n        requiredItems {\n          itemCode\n          itemType\n        }\n      }\n      description\n      disclaimer\n      id\n      images {\n        alias\n        disclaimer\n        isHero\n        url\n      }\n      includedAccessoryIds\n      installPoint\n      title\n      type\n      warranty\n    }\n    categories {\n      id\n      value\n    }\n    configImages {\n      exterior {\n        alias\n        disclaimer\n        url\n        ... on AccessoryImage {\n          isHero\n        }\n        ... on LexusImage {\n          angle\n          background\n          time\n        }\n        ... on StaticImage {\n          isHero\n        }\n        ... on ToyotaImage {\n          angle\n        }\n      }\n      interior {\n        alias\n        disclaimer\n        url\n        ... on AccessoryImage {\n          isHero\n        }\n        ... on LexusImage {\n          angle\n          background\n          time\n        }\n        ... on StaticImage {\n          isHero\n        }\n        ... on ToyotaImage {\n          angle\n        }\n      }\n      ... on LexusConfigImages {\n        backgrounds {\n          thumbnail\n          type\n        }\n        time {\n          icon\n          type\n        }\n      }\n      ... on ToyotaConfigImages {\n        background {\n          alias\n          angle\n          disclaimer\n          url\n        }\n      }\n    }\n    defaultConfig {\n      accessoryIds\n      exteriorColorId\n      interiorColorId\n      packageIds\n      trimId\n      wheelsId\n    }\n    dph\n    exteriorColors {\n      code\n      colorFamilies {\n        hexCode\n        name\n      }\n      compatibilityWithCurrentConfig {\n        availableWithTrims\n        isCompatible\n        requiredItems {\n          itemCode\n          itemType\n        }\n      }\n      hexCode\n      id\n      images {\n        alias\n        disclaimer\n        isHero\n        url\n      }\n      isExtraCostColor\n      msrp {\n        disclaimer\n        value\n      }\n      title\n    }\n    grade {\n      asShownPrice {\n        disclaimer\n        value\n      }\n      baseMsrp {\n        disclaimer\n        value\n      }\n      exteriorColorIds\n      gradeName\n      hasSeatingOptions\n      image {\n        alias\n        disclaimer\n        isHero\n        url\n      }\n      interiorColorIds\n      mileage {\n        category\n        city\n        combined\n        highway\n        isAvailable\n        mpge\n        range\n      }\n      trims {\n        accessoryIds {\n          id\n          msrp {\n            disclaimer\n            value\n          }\n        }\n        cabBed {\n          bedDepth\n          bedLength\n          bedWidth\n          betweenWheelWell\n          cabDetails\n          code\n          compatibilityWithCurrentConfig {\n            availableWithTrims\n            isCompatible\n            requiredItems {\n              itemCode\n              itemType\n            }\n          }\n          description\n          id\n          label\n          overallHeight\n          overallLength\n          overallWidth\n        }\n        code\n        compatibilityWithCurrentConfig {\n          availableWithTrims\n          isCompatible\n          requiredItems {\n            itemCode\n            itemType\n          }\n        }\n        defaultColorId\n        description\n        drive {\n          code\n          compatibilityWithCurrentConfig {\n            availableWithTrims\n            isCompatible\n            requiredItems {\n              itemCode\n              itemType\n            }\n          }\n          description\n          disclaimer\n          icon\n          value\n        }\n        engine {\n          code\n          compatibilityWithCurrentConfig {\n            availableWithTrims\n            isCompatible\n            requiredItems {\n              itemCode\n              itemType\n            }\n          }\n          description\n          disclaimer\n          icon\n          value\n        }\n        exteriorColorIds\n        fuelType\n        horsepower {\n          compatibilityWithCurrentConfig {\n            availableWithTrims\n            isCompatible\n            requiredItems {\n              itemCode\n              itemType\n            }\n          }\n          description\n          disclaimer\n          icon\n          value\n        }\n        images {\n          alias\n          disclaimer\n          isHero\n          url\n        }\n        interiorColorIds\n        isDefaultTrim\n        mileage {\n          category\n          city\n          combined\n          highway\n          isAvailable\n          mpge\n          range\n        }\n        msrp {\n          disclaimer\n          value\n        }\n        packageIds {\n          id\n          msrp {\n            disclaimer\n            value\n          }\n        }\n        powertrain {\n          compatibilityWithCurrentConfig {\n            availableWithTrims\n            isCompatible\n            requiredItems {\n              itemCode\n              itemType\n            }\n          }\n          drive {\n            code\n            compatibilityWithCurrentConfig {\n              availableWithTrims\n              isCompatible\n              requiredItems {\n                itemCode\n                itemType\n              }\n            }\n            description\n            disclaimer\n            icon\n            value\n          }\n          engine {\n            code\n            compatibilityWithCurrentConfig {\n              availableWithTrims\n              isCompatible\n              requiredItems {\n                itemCode\n                itemType\n              }\n            }\n            description\n            disclaimer\n            icon\n            value\n          }\n          horsepower {\n            compatibilityWithCurrentConfig {\n              availableWithTrims\n              isCompatible\n              requiredItems {\n                itemCode\n                itemType\n              }\n            }\n            description\n            disclaimer\n            icon\n            value\n          }\n          transmission {\n            code\n            compatibilityWithCurrentConfig {\n              availableWithTrims\n              isCompatible\n              requiredItems {\n                itemCode\n                itemType\n              }\n            }\n            description\n            disclaimer\n            icon\n            value\n          }\n        }\n        seating {\n          code\n          compatibilityWithCurrentConfig {\n            availableWithTrims\n            isCompatible\n            requiredItems {\n              itemCode\n              itemType\n            }\n          }\n          description\n          disclaimer\n          icon\n          value\n        }\n        shortDescription\n        title\n        transmission {\n          code\n          compatibilityWithCurrentConfig {\n            availableWithTrims\n            isCompatible\n            requiredItems {\n              itemCode\n              itemType\n            }\n          }\n          description\n          disclaimer\n          icon\n          value\n        }\n        warrantyIds\n        wheelCodes\n      }\n    }\n    interiorColors {\n      code\n      colorFamilies {\n        hexCode\n        name\n      }\n      compatibilityWithCurrentConfig {\n        availableWithTrims\n        isCompatible\n        requiredItems {\n          itemCode\n          itemType\n        }\n      }\n      hexCode\n      id\n      images {\n        alias\n        disclaimer\n        isHero\n        url\n      }\n      material\n      msrp {\n        disclaimer\n        value\n      }\n      name\n      title\n    }\n    mileage {\n      category\n      city\n      combined\n      highway\n      isAvailable\n      mpge\n      range\n    }\n    msrp {\n      disclaimer\n      value\n    }\n    packages {\n      availability\n      category\n      code\n      compatibilityWithCurrentConfig {\n        availableWithTrims\n        isCompatible\n        requiredItems {\n          itemCode\n          itemType\n        }\n      }\n      description\n      id\n      images {\n        alias\n        disclaimer\n        isHero\n        url\n      }\n      installPoint\n      packageFeatures {\n        category\n        disclaimer\n        subCategories\n        title\n      }\n      subCategories\n      title\n      type\n    }\n    seating\n    seriesId\n    seriesName\n    trim {\n      accessoryIds {\n        id\n        msrp {\n          disclaimer\n          value\n        }\n      }\n      cabBed {\n        bedDepth\n        bedLength\n        bedWidth\n        betweenWheelWell\n        cabDetails\n        code\n        compatibilityWithCurrentConfig {\n          availableWithTrims\n          isCompatible\n          requiredItems {\n            itemCode\n            itemType\n          }\n        }\n        description\n        id\n        label\n        overallHeight\n        overallLength\n        overallWidth\n      }\n      code\n      compatibilityWithCurrentConfig {\n        availableWithTrims\n        isCompatible\n        requiredItems {\n          itemCode\n          itemType\n        }\n      }\n      defaultColorId\n      description\n      drive {\n        code\n        compatibilityWithCurrentConfig {\n          availableWithTrims\n          isCompatible\n          requiredItems {\n            itemCode\n            itemType\n          }\n        }\n        description\n        disclaimer\n        icon\n        value\n      }\n      engine {\n        code\n        compatibilityWithCurrentConfig {\n          availableWithTrims\n          isCompatible\n          requiredItems {\n            itemCode\n            itemType\n          }\n        }\n        description\n        disclaimer\n        icon\n        value\n      }\n      exteriorColorIds\n      fuelType\n      horsepower {\n        compatibilityWithCurrentConfig {\n          availableWithTrims\n          isCompatible\n          requiredItems {\n            itemCode\n            itemType\n          }\n        }\n        description\n        disclaimer\n        icon\n        value\n      }\n      images {\n        alias\n        disclaimer\n        isHero\n        url\n      }\n      interiorColorIds\n      isDefaultTrim\n      mileage {\n        category\n        city\n        combined\n        highway\n        isAvailable\n        mpge\n        range\n      }\n      msrp {\n        disclaimer\n        value\n      }\n      packageIds {\n        id\n        msrp {\n          disclaimer\n          value\n        }\n      }\n      powertrain {\n        compatibilityWithCurrentConfig {\n          availableWithTrims\n          isCompatible\n          requiredItems {\n            itemCode\n            itemType\n          }\n        }\n        drive {\n          code\n          compatibilityWithCurrentConfig {\n            availableWithTrims\n            isCompatible\n            requiredItems {\n              itemCode\n              itemType\n            }\n          }\n          description\n          disclaimer\n          icon\n          value\n        }\n        engine {\n          code\n          compatibilityWithCurrentConfig {\n            availableWithTrims\n            isCompatible\n            requiredItems {\n              itemCode\n              itemType\n            }\n          }\n          description\n          disclaimer\n          icon\n          value\n        }\n        horsepower {\n          compatibilityWithCurrentConfig {\n            availableWithTrims\n            isCompatible\n            requiredItems {\n              itemCode\n              itemType\n            }\n          }\n          description\n          disclaimer\n          icon\n          value\n        }\n        transmission {\n          code\n          compatibilityWithCurrentConfig {\n            availableWithTrims\n            isCompatible\n            requiredItems {\n              itemCode\n              itemType\n            }\n          }\n          description\n          disclaimer\n          icon\n          value\n        }\n      }\n      seating {\n        code\n        compatibilityWithCurrentConfig {\n          availableWithTrims\n          isCompatible\n          requiredItems {\n            itemCode\n            itemType\n          }\n        }\n        description\n        disclaimer\n        icon\n        value\n      }\n      shortDescription\n      title\n      transmission {\n        code\n        compatibilityWithCurrentConfig {\n          availableWithTrims\n          isCompatible\n          requiredItems {\n            itemCode\n            itemType\n          }\n        }\n        description\n        disclaimer\n        icon\n        value\n      }\n      warrantyIds\n      wheelCodes\n    }\n    warranties {\n      category\n      description\n      id\n      name\n      value\n    }\n    wheels {\n      code\n      compatibilityWithCurrentConfig {\n        availableWithTrims\n        isCompatible\n        requiredItems {\n          itemCode\n          itemType\n        }\n      }\n      image {\n        alias\n        disclaimer\n        isHero\n        url\n      }\n      title\n      type\n      ... on OptionWheel {\n        msrp {\n          disclaimer\n          value\n        }\n      }\n    }\n    year\n  }\n}\n",
-            "variables": {
-                "configInputGrade": {
-                    "brand": "TOYOTA",
-                    "language": "EN",
-                    "region": {"zipCode": "33444"},
-                    "seriesId": seriesId,
-                    "year": year,
-                    "gradeName": gradeName
+            series_data = data.get('data', {}).get('getSeries', {}).get('seriesData', [])
+            self.logger.info(f"Found {len(series_data)} vehicle series")
+
+            for series in series_data:
+                series_id = series.get('id')
+                series_name = series.get('name')
+
+                for year_data in series.get('yearSpecificData', []):
+                    year = int(year_data.get('year', 0))
+                    if year == 0:
+                        continue
+
+                    self.logger.info(f"Processing {series_name} {year}")
+
+                    # Create base model info
+                    model = {
+                        "make": "Toyota",
+                        "model": series_name,
+                        "year": year
+                    }
+
+                    # Request grades and trims data
+                    body = {
+                        "query": """
+                            query GetSeries($brand: Brand!, $seriesId: String!, $year: Int!, $language: Language, $region: Region!) {
+                                getSeries(brand: $brand, seriesId: $seriesId, year: $year, language: $language, region: $region) {
+                                    seriesData {
+                                        yearSpecificData {
+                                            grades {
+                                                gradeName
+                                                image {
+                                                    url
+                                                }
+                                                trims {
+                                                    code
+                                                    msrp {
+                                                        value
+                                                    }
+                                                    defaultConfig {
+                                                        msrp {
+                                                            value
+                                                        }
+                                                    }
+                                                    cabBed {
+                                                        bedLength
+                                                        label
+                                                        description
+                                                    }
+                                                    powertrain {
+                                                        drive {
+                                                            value
+                                                        }
+                                                        engine {
+                                                            value
+                                                        }
+                                                        transmission {
+                                                            value
+                                                        }
+                                                    }
+                                                    fuelType
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        """,
+                        "variables": {
+                            "brand": "TOYOTA",
+                            "language": "EN",
+                            "region": {"zipCode": "33444"},
+                            "seriesId": series_id,
+                            "year": year
+                        }
+                    }
+
+                    yield scrapy.Request(
+                        url=self.url,
+                        method='POST',
+                        body=json.dumps(body),
+                        headers=self.headers,
+                        callback=self.parse_trims_directly,
+                        cb_kwargs={'model': model, 'series_id': series_id}
+                    )
+        except Exception as e:
+            self.logger.error(f"Error parsing series: {str(e)}", exc_info=True)
+
+    def parse_trims_directly(self, response, model, series_id):
+        try:
+            data = json.loads(response.text)
+            if 'errors' in data:
+                self.logger.error(f"API errors in trims request: {data['errors']}")
+                return
+
+            # Find all trims across all grades
+            year_data = \
+            data.get('data', {}).get('getSeries', {}).get('seriesData', [{}])[0].get('yearSpecificData', [{}])[0]
+
+            for grade in year_data.get('grades', []):
+                if grade is None:
+                    continue
+
+                grade_name = grade.get('gradeName', '')
+
+                # Fix for the NoneType error - properly handle image extraction
+                grade_image_url = ''
+                image = grade.get('image')
+                if image is not None:
+                    grade_image_url = image.get('url', '')
+
+                self.logger.info(f"Processing grade: {grade_name}")
+
+                # Now get detailed information for colors and packages
+                # FIXED QUERY: Removed the invalid msrp field from packages
+                body = {
+                    "query": """
+                        query GetConfigByGrade($configInputGrade: ConfigInputGrade!) {
+                            getConfigByGrade(configInputGrade: $configInputGrade) {
+                                exteriorColors {
+                                    title
+                                    msrp { value }
+                                    hexCode
+                                }
+                                interiorColors {
+                                    name
+                                    msrp { value }
+                                    hexCode
+                                }
+                                categories {
+                                    value
+                                }
+                                packages {
+                                    id
+                                    title
+                                    description
+                                }
+                            }
+                        }
+                    """,
+                    "variables": {
+                        "configInputGrade": {
+                            "brand": "TOYOTA",
+                            "language": "EN",
+                            "region": {"zipCode": "33444"},
+                            "seriesId": series_id,
+                            "year": model['year'],
+                            "gradeName": grade_name
+                        }
+                    }
                 }
-            },
-        }
+
+                # Process each trim within this grade now
+                trims = grade.get('trims', [])
+                self.logger.info(f"Found {len(trims)} trims for {grade_name}")
+
+                if trims:
+                    yield scrapy.Request(
+                        url=self.url,
+                        method='POST',
+                        body=json.dumps(body),
+                        headers=self.headers,
+                        callback=self.parse_colors_packages,
+                        cb_kwargs={
+                            'base_model': model,
+                            'grade_name': grade_name,
+                            'grade_image_url': grade_image_url,
+                            'trims': trims
+                        }
+                    )
+
+        except Exception as e:
+            self.logger.error(f"Error parsing trims directly: {str(e)}", exc_info=True)
+
+    def parse_colors_packages(self, response, base_model, grade_name, grade_image_url, trims):
+        try:
+            data = json.loads(response.text)
+            if 'errors' in data:
+                self.logger.error(f"API errors in colors/packages request: {data['errors']}")
+                return
+
+            config = data.get('data', {}).get('getConfigByGrade', {})
+
+            # Extract common data (colors, packages, body type)
+            exterior_colors = []
+            for c in config.get('exteriorColors', []):
+                if c is None:
+                    continue
+
+                color_info = {
+                    "name": c.get('title', ''),
+                    "price": c.get('msrp', {}).get('value', ''),
+                    "hex": ""
+                }
+
+                # Safely extract hex code
+                if c.get('hexCode'):
+                    hex_code = c.get('hexCode')
+                    if isinstance(hex_code, list) and len(hex_code) > 0:
+                        color_info["hex"] = hex_code[0]
+
+                exterior_colors.append(color_info)
+
+            interior_colors = []
+            for c in config.get('interiorColors', []):
+                if c is None:
+                    continue
+
+                color_info = {
+                    "name": c.get('name', ''),
+                    "price": c.get('msrp', {}).get('value', ''),
+                    "hex": ""
+                }
+
+                # Safely extract hex code
+                if c.get('hexCode'):
+                    hex_code = c.get('hexCode')
+                    if isinstance(hex_code, list) and len(hex_code) > 0:
+                        color_info["hex"] = hex_code[0]
+
+                interior_colors.append(color_info)
+
+            categories = config.get('categories', [])
+            body_type = ""
+            if categories and len(categories) > 0:
+                body_type = categories[0].get('value', '')
+
+            # Fixed package extraction without msrp field
+            all_packages = []
+            for p in config.get('packages', []):
+                if p is None:
+                    continue
+
+                all_packages.append({
+                    'id': p.get('id', ''),
+                    'title': p.get('title', ''),
+                    'description': p.get('description', '')
+                })
+
+            # Process each trim with the common data
+            for trim in trims:
+                if trim is None:
+                    continue
+
+                # Create a separate model for each trim
+                trim_model = copy.deepcopy(base_model)
+                trim_model.update({
+                    "trim": grade_name,
+                    "url": grade_image_url,
+                    "exteriorColors": json.dumps(exterior_colors),
+                    "interiorColors": json.dumps(interior_colors),
+                    "bodyType": body_type,
+                    "engineType": "",
+                    "driveType": "",
+                    "transmissionType": "",
+                    "fuelType": "",
+                    "cabType": "",
+                    "bedLength": "",
+                    "msrp": "",
+                    "packages": json.dumps(all_packages) if all_packages else ""
+                })
+
+                # Extract trim-specific info
+                trim_code = trim.get('code', '')
+                self.logger.info(f"Processing trim {trim_code} for {grade_name}")
+
+                # Get MSRP
+                msrp = trim.get('msrp')
+                if msrp and 'value' in msrp:
+                    trim_model['msrp'] = msrp.get('value', '')
+                elif trim.get('defaultConfig') and trim.get('defaultConfig').get('msrp'):
+                    default_msrp = trim.get('defaultConfig').get('msrp')
+                    if default_msrp and 'value' in default_msrp:
+                        trim_model['msrp'] = default_msrp.get('value', '')
+
+                # Extract fuel type
+                trim_model['fuelType'] = trim.get('fuelType', '')
+
+                # Extract cab and bed information
+                cab_bed = trim.get('cabBed')
+                if cab_bed:
+                    # Bed length
+                    trim_model['bedLength'] = cab_bed.get('bedLength', '')
+
+                    # Cab type
+                    cab_label = cab_bed.get('label', '')
+                    cab_desc = cab_bed.get('description', '')
+
+                    # Use whichever is available (label or description)
+                    cab_text = cab_label if cab_label else cab_desc
+
+                    if cab_text:
+                        cab_text_lower = cab_text.lower()
+                        if 'crew' in cab_text_lower or 'double cab' in cab_text_lower:
+                            trim_model['cabType'] = "Crew Cab"
+                        elif 'regular' in cab_text_lower:
+                            trim_model['cabType'] = "Regular Cab"
+                        elif 'extended' in cab_text_lower or 'access cab' in cab_text_lower:
+                            trim_model['cabType'] = "Extended Cab"
+                        else:
+                            trim_model['cabType'] = cab_text
+
+                # Extract powertrain information
+                powertrain = trim.get('powertrain')
+                if powertrain:
+                    # Drive type
+                    drive = powertrain.get('drive')
+                    if drive:
+                        trim_model['driveType'] = drive.get('value', '')
+
+                    # Engine type
+                    engine = powertrain.get('engine')
+                    if engine:
+                        trim_model['engineType'] = engine.get('value', '')
+
+                    # Transmission
+                    transmission = powertrain.get('transmission')
+                    if transmission:
+                        trim_model['transmissionType'] = transmission.get('value', '')
+                    else:
+                        trim_model['transmissionType'] = "Automatic"  # Default
+
+                yield trim_model
+
+        except Exception as e:
+            self.logger.error(f"Error parsing colors and packages: {str(e)}", exc_info=True)
 
 
-settings = Settings()
-
-settings.set("USER_AGENT",
-             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-
-settings.set("DOWNLOADER_MIDDLEWARES", {
-    "scraper.scraper.middlewares.ProxyMiddleware": 543,
-})
-
-# settings.set("FEED_URI", 'output.csv')
-# settings.set("FEED_FORMAT", 'csv')
-
-# settings.set("TWISTED_REACTOR", "twisted.internet.asyncioreactor.AsyncioSelectorReactor")
-
-process = CrawlerProcess(settings)
-process.crawl(ToyotaSpider)
-process.start()
+if __name__ == "__main__":
+    process = CrawlerProcess(settings=ToyotaSpider.custom_settings)
+    process.crawl(ToyotaSpider)
+    process.start()
